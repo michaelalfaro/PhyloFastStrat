@@ -300,20 +300,49 @@ server <- function(input, output, session) {
     if(input$no_isoforms){
       ph <- ph_filt
     }
-    ph <- ph %>%
-      filter(gene %in% genes_of_interest_reactive()) %>%
-      #filter(mrca_name %in% input$ps) %>%
+    
+    # Get the selected gene sets based on run mode
+    if(input$runmode) {
+      if(is.null(input$selectized_genes)) {
+        return(NULL)
+      }
+      gene_sets <- list("Custom Set" = input$selectized_genes)
+    } else {
+      if(is.null(input$disease_of_interest)) {
+        return(NULL)
+      }
+      gene_sets <- lapply(input$disease_of_interest, function(x) {
+        genes <- MasterGeneLists[[x]]
+        genes[!is.na(genes)]
+      })
+      names(gene_sets) <- input$disease_of_interest
+    }
+    
+    # Create a data frame with all genes from all sets
+    all_genes <- unique(unlist(gene_sets))
+    
+    # Get phylostrata information for all genes
+    ph_data <- ph %>%
+      filter(gene %in% all_genes) %>%
       group_by(Gene = gene, Phylostrata = mrca_name) %>%
       summarize(`Total Isoforms` = n())
-    ph
+    
+    # Create a wide format data frame with presence/absence for each set
+    for(set_name in names(gene_sets)) {
+      ph_data[[set_name]] <- ifelse(ph_data$Gene %in% gene_sets[[set_name]], "Yes", "No")
+    }
+    
+    # Reorder columns to put gene sets after the main information
+    ph_data <- ph_data %>%
+      select(Gene, Phylostrata, `Total Isoforms`, everything())
+    
+    ph_data
   }, 
   extensions = 'Buttons', 
   server = F,
   options = list(
     paging = TRUE,
     searching = TRUE,
-    #fixedColumns = TRUE,
-    # scrollY = 400,
     autoWidth = TRUE,
     ordering = TRUE,
     lengthMenu = c(10, 25, 50, 100),
