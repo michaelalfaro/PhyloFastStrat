@@ -179,6 +179,7 @@ ui <- fluidPage(
                ),
       tabPanel("Gene map",
                selectInput("ps", label = "Select a phylostrata to visualize:", choices = unique(ph$mrca_name)),
+               selectInput("gene_set_map", label = "Select gene set to visualize:", choices = NULL),
                div(
                  style = "position: relative;",
                  withSpinner(plotOutput("string_plot", height = "800px"), type = 8)
@@ -618,6 +619,23 @@ server <- function(input, output, session) {
     p
   })
   
+  # Update gene set selection for map when gene sets change
+  observe({
+    if(input$runmode) {
+      if(!is.null(input$selectized_genes)) {
+        updateSelectInput(session, "gene_set_map", 
+                         choices = c("Custom Set" = "Custom Set"),
+                         selected = "Custom Set")
+      }
+    } else {
+      if(!is.null(input$disease_of_interest)) {
+        updateSelectInput(session, "gene_set_map", 
+                         choices = input$disease_of_interest,
+                         selected = input$disease_of_interest[1])
+      }
+    }
+  })
+
   ##### string plot #####
   output$string_plot <- renderPlot({
     if(input$no_isoforms){
@@ -626,37 +644,55 @@ server <- function(input, output, session) {
     
     # Add error handling
     tryCatch({
+      # Get the selected gene set
+      if(input$runmode) {
+        if(is.null(input$selectized_genes)) {
+          return(NULL)
+        }
+        current_genes <- input$selectized_genes
+      } else {
+        if(is.null(input$disease_of_interest)) {
+          return(NULL)
+        }
+        current_genes <- MasterGeneLists[[input$gene_set_map]]
+        current_genes <- current_genes[!is.na(current_genes)]
+      }
+      
       # Get genes for current phylostrata
-      current_genes <- ph %>% 
-        filter(is_of_interest & mrca_name %in% input$ps) %>% 
+      genes_to_plot <- ph %>% 
+        filter(gene %in% current_genes & mrca_name %in% input$ps) %>% 
         pull(gene) %>% 
         unique()
       
-      # Check cache first
-      cached_results <- get_cached_string_results(current_genes, input$ps)
+      if(length(genes_to_plot) == 0) {
+        plot(c(0, 1), c(0, 1), type = "n", axes = FALSE, xlab = "", ylab = "")
+        text(0.5, 0.5, "No genes found in selected phylostrata", cex = 1.2)
+        return()
+      }
       
-      if (!is.null(cached_results)) {
+      # Check cache first
+      cache_key <- digest::digest(paste(sort(genes_to_plot), input$ps, collapse = "_"))
+      cache_file <- file.path("cache", paste0(cache_key, ".rds"))
+      
+      if (file.exists(cache_file)) {
         # Use cached results
+        cached_results <- readRDS(cache_file)
         string_db <- cached_results$string_db
         ph_mapped <- cached_results$ph_mapped
       } else {
         # Generate new results
         string_db <- STRINGdb::STRINGdb$new(species = 9606, version = "12", score_threshold = 200, input_directory = ".")
-        ph$is_of_interest <- ph$gene %in% genes_of_interest_reactive()
-        ph$annot_of_interest <-
-          ifelse(ph$is_of_interest,
-                 disease_name(),
-                 "All Human Genes")
         
         withProgress(message = "Pulling data from STRINGdb...", value = 0, {
-          ph_mapped <- string_db$map(ph %>% filter(is_of_interest & mrca_name %in% input$ps) %>% as.data.frame(), "gene", removeUnmappedRows = T)
+          ph_mapped <- string_db$map(
+            ph %>% filter(gene %in% genes_to_plot & mrca_name %in% input$ps) %>% as.data.frame(),
+            "gene",
+            removeUnmappedRows = T
+          )
           incProgress(amount = 0.5, message = "Generating plot...")
           
           # Cache the results
-          save_to_cache(current_genes, input$ps, list(
-            string_db = string_db,
-            ph_mapped = ph_mapped
-          ))
+          saveRDS(list(string_db = string_db, ph_mapped = ph_mapped), cache_file)
           
           string_db$plot_network(ph_mapped$STRING_id, required_score = 800)
           incProgress(amount = 0.5, message = "Done!")
