@@ -561,8 +561,8 @@ server <- function(input, output, session) {
         significant = p_value < 0.05
       )
     
-    # Create the heatmap plot
-    heatmap_plot <- ggplot(plot_data, aes(x = set1, y = set2)) +
+    # Create the plot
+    p <- ggplot(plot_data, aes(x = set1, y = set2)) +
       geom_tile(aes(fill = correlation, alpha = significant)) +
       geom_text(aes(label = label), size = 4) +
       scale_fill_gradient2(
@@ -584,42 +584,9 @@ server <- function(input, output, session) {
       labs(title = "Correlation Matrix of Normalized Gene Emergence Rates",
            subtitle = "Significant correlations (p < 0.05) are highlighted")
     
-    # Create scatter plots for each pair of gene sets
-    scatter_plots <- lapply(1:nrow(plot_data), function(i) {
-      if(plot_data$set1[i] != plot_data$set2[i]) {
-        ggplot(corr_data, aes_string(x = plot_data$set1[i], y = plot_data$set2[i])) +
-          geom_point(alpha = 0.5) +
-          geom_smooth(method = "lm", color = "red", se = TRUE) +
-          theme_minimal() +
-          theme(
-            axis.text = element_text(size = 8),
-            axis.title = element_text(size = 10),
-            plot.title = element_text(size = 10)
-          ) +
-          labs(
-            title = paste(plot_data$set1[i], "vs", plot_data$set2[i]),
-            x = plot_data$set1[i],
-            y = plot_data$set2[i]
-          )
-      } else {
-        ggplot() + theme_void() + labs(title = plot_data$set1[i])
-      }
-    })
-    
-    # Arrange plots in a grid
-    n_sets <- length(unique(plot_data$set1))
-    gridExtra::grid.arrange(
-      heatmap_plot,
-      arrangeGrob(grobs = scatter_plots, ncol = n_sets),
-      ncol = 1,
-      heights = c(1, 1)
-    )
-    
-    # Store the plots for PDF download
-    plot_values$correlation_matrix <- list(
-      heatmap = heatmap_plot,
-      scatter_plots = scatter_plots
-    )
+    # Store the plot
+    plot_values$correlation_matrix <- p
+    p
   })
   
   ##### string plot #####
