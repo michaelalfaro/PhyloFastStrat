@@ -123,8 +123,18 @@ ui <- fluidPage(
       ),
       conditionalPanel(
         condition = "input.runmode",
-        textInput(inputId = "other_disease_of_interest", "Gene set name:"),
-        selectizeInput(inputId = "selectized_genes", label = "Genes to query:",
+        textInput(inputId = "other_disease_of_interest", "Gene set name:", placeholder = "Enter a name for your gene set"),
+        div(
+          style = "margin-bottom: 15px;",
+          textAreaInput(
+            inputId = "pasted_genes",
+            label = "Paste genes (one per line or comma-separated):",
+            placeholder = "Paste your genes here...",
+            height = "150px",
+            resize = "vertical"
+          )
+        ),
+        selectizeInput(inputId = "selectized_genes", label = "Or select genes from list:",
                        choices = NULL,
                        multiple = TRUE,
                        selected = NULL,
@@ -136,7 +146,7 @@ ui <- fluidPage(
                        )),
         fileInput(
           inputId = "custom_file",
-          label = "Custom Gene List:",
+          label = "Or upload a CSV file:",
           accept = ".csv",
           buttonLabel = "Upload"
         ),
@@ -197,10 +207,21 @@ server <- function(input, output, session) {
       genes_of_interest <- input$selectized_genes
     }else if(!is.null(input$disease_of_interest) & !input$runmode){
       genes_of_interest <- MasterGeneLists[[input$disease_of_interest]]
+    }else if(!is.null(input$pasted_genes) && input$pasted_genes != ""){
+      # Handle pasted genes
+      genes_of_interest <- unlist(strsplit(input$pasted_genes, split = "[\n,]+"))
+      genes_of_interest <- trimws(genes_of_interest)
+      genes_of_interest <- genes_of_interest[genes_of_interest != ""]
     }else{
       custom_gene_list <- readr::read_csv(file = input$custom_file$datapath)
       genes_of_interest <- custom_gene_list[,1]
     }
+    
+    # Set default name if none provided
+    if(input$runmode && (is.null(input$other_disease_of_interest) || input$other_disease_of_interest == "")) {
+      updateTextInput(session, "other_disease_of_interest", value = paste0("Custom Gene Set ", format(Sys.time(), "%Y%m%d_%H%M%S")))
+    }
+    
     # Save a copy of genes_of_interest to compare input to what is processed
     genes_of_interest_input <- genes_of_interest[!is.na(genes_of_interest)]
     
