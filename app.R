@@ -135,16 +135,10 @@ ui <- fluidPage(
                ),
       tabPanel("Gene map",
                selectInput("ps", label = "Select a phylostrata to visualize:", choices = unique(ph$mrca_name)),
-               # actionButton("retrieveSTRING", "Retrieve STRING plot", value = NULL),
-               # useShinyjs(),
-               # extendShinyjs(script = "www/my_functions.js", functions = "loadStringData"),
-               # includeScript("http://string-db.org/javascript/combined_embedded_network_v2.0.2.js"),
-               # includeScript("https://blueimp.github.io/JavaScript-Canvas-to-Blob/js/canvas-to-blob.js"),
-               # includeScript("https://cdnjs.cloudflare.com/ajax/libs/canvg/1.4/rgbcolor.min.js"),
-               # includeScript("https://cdnjs.cloudflare.com/ajax/libs/stackblur-canvas/1.4.1/stackblur.min.js"),
-               # includeScript("https://cdn.jsdelivr.net/npm/canvg/dist/browser/canvg.min.js"),
-               # includeCSS("www/style.css"),
-               plotOutput("string_plot", height = "800px") %>% withSpinner()
+               div(
+                 style = "position: relative;",
+                 withSpinner(plotOutput("string_plot", height = "800px"), type = 8)
+               )
                ),
       tabPanel(
         "Functional enrichment plots",
@@ -329,24 +323,30 @@ server <- function(input, output, session) {
     if(input$no_isoforms){
       ph <- ph_filt
     }
-    string_db <- STRINGdb::STRINGdb$new(species = 9606, version = "12", score_threshold = 200, input_directory = ".")
-    ph$is_of_interest <- ph$gene %in% genes_of_interest_reactive()
-    ph$annot_of_interest <-
-      ifelse(ph$is_of_interest,
-             disease_name(),
-             "All Human Genes")
     
-    gg_color_hue <- function(n) {
-      hues = seq(15, 375, length = n + 1)
-      paste0(hcl(h = hues, l = 65, c = 100)[1:n], "FF")
-    }
-    
-    withProgress(message = "Pulling data from STRINGdb...", value = 0, {
-      ph_mapped <- string_db$map(ph %>% filter(is_of_interest & mrca_name %in% input$ps) %>% as.data.frame(), "gene", removeUnmappedRows = T)
-      #payload_id <- string_db$post_payload( ph_mapped$STRING_id, colors=gg_color_hue(length(unique(ph_mapped$mrca_name))))
-      incProgress(amount = 0.5, message = "Generating plot...")
-      string_db$plot_network(ph_mapped$STRING_id, required_score = 800)
-      incProgress(amount = 0.5, message = "Done!")
+    # Add error handling
+    tryCatch({
+      string_db <- STRINGdb::STRINGdb$new(species = 9606, version = "12", score_threshold = 200, input_directory = ".")
+      ph$is_of_interest <- ph$gene %in% genes_of_interest_reactive()
+      ph$annot_of_interest <-
+        ifelse(ph$is_of_interest,
+               disease_name(),
+               "All Human Genes")
+      
+      gg_color_hue <- function(n) {
+        hues = seq(15, 375, length = n + 1)
+        paste0(hcl(h = hues, l = 65, c = 100)[1:n], "FF")
+      }
+      
+      withProgress(message = "Pulling data from STRINGdb...", value = 0, {
+        ph_mapped <- string_db$map(ph %>% filter(is_of_interest & mrca_name %in% input$ps) %>% as.data.frame(), "gene", removeUnmappedRows = T)
+        incProgress(amount = 0.5, message = "Generating plot...")
+        string_db$plot_network(ph_mapped$STRING_id, required_score = 800)
+        incProgress(amount = 0.5, message = "Done!")
+      })
+    }, error = function(e) {
+      plot(c(0, 1), c(0, 1), type = "n", axes = FALSE, xlab = "", ylab = "")
+      text(0.5, 0.5, paste("Error generating STRING plot:", e$message), cex = 1.2)
     })
   })
   
