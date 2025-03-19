@@ -23,6 +23,31 @@ library(quarto)
 library(DT)
 library(tidyverse)
 library(shinythemes)
+library(digest)  # For creating cache keys
+
+# Create cache directory if it doesn't exist
+if (!dir.exists("cache")) {
+  dir.create("cache")
+}
+
+# Function to get cached STRINGdb results
+get_cached_string_results <- function(genes, ps) {
+  # Create a unique cache key based on genes and phylostrata
+  cache_key <- digest::digest(paste(sort(genes), ps, collapse = "_"))
+  cache_file <- file.path("cache", paste0(cache_key, ".rds"))
+  
+  if (file.exists(cache_file)) {
+    return(readRDS(cache_file))
+  }
+  return(NULL)
+}
+
+# Function to save STRINGdb results to cache
+save_to_cache <- function(genes, ps, results) {
+  cache_key <- digest::digest(paste(sort(genes), ps, collapse = "_"))
+  cache_file <- file.path("cache", paste0(cache_key, ".rds"))
+  saveRDS(results, cache_file)
+}
 
 #setwd("~/Documents/JainAnalytics/Kolabtree/Proposal1/")
 #MasterGeneLists <- read_excel(path = "MasterGeneLists.xlsx")
@@ -326,24 +351,42 @@ server <- function(input, output, session) {
     
     # Add error handling
     tryCatch({
-      string_db <- STRINGdb::STRINGdb$new(species = 9606, version = "12", score_threshold = 200, input_directory = ".")
-      ph$is_of_interest <- ph$gene %in% genes_of_interest_reactive()
-      ph$annot_of_interest <-
-        ifelse(ph$is_of_interest,
-               disease_name(),
-               "All Human Genes")
+      # Get genes for current phylostrata
+      current_genes <- ph %>% 
+        filter(is_of_interest & mrca_name %in% input$ps) %>% 
+        pull(gene) %>% 
+        unique()
       
-      gg_color_hue <- function(n) {
-        hues = seq(15, 375, length = n + 1)
-        paste0(hcl(h = hues, l = 65, c = 100)[1:n], "FF")
+      # Check cache first
+      cached_results <- get_cached_string_results(current_genes, input$ps)
+      
+      if (!is.null(cached_results)) {
+        # Use cached results
+        string_db <- cached_results$string_db
+        ph_mapped <- cached_results$ph_mapped
+      } else {
+        # Generate new results
+        string_db <- STRINGdb::STRINGdb$new(species = 9606, version = "12", score_threshold = 200, input_directory = ".")
+        ph$is_of_interest <- ph$gene %in% genes_of_interest_reactive()
+        ph$annot_of_interest <-
+          ifelse(ph$is_of_interest,
+                 disease_name(),
+                 "All Human Genes")
+        
+        withProgress(message = "Pulling data from STRINGdb...", value = 0, {
+          ph_mapped <- string_db$map(ph %>% filter(is_of_interest & mrca_name %in% input$ps) %>% as.data.frame(), "gene", removeUnmappedRows = T)
+          incProgress(amount = 0.5, message = "Generating plot...")
+          
+          # Cache the results
+          save_to_cache(current_genes, input$ps, list(
+            string_db = string_db,
+            ph_mapped = ph_mapped
+          ))
+          
+          string_db$plot_network(ph_mapped$STRING_id, required_score = 800)
+          incProgress(amount = 0.5, message = "Done!")
+        })
       }
-      
-      withProgress(message = "Pulling data from STRINGdb...", value = 0, {
-        ph_mapped <- string_db$map(ph %>% filter(is_of_interest & mrca_name %in% input$ps) %>% as.data.frame(), "gene", removeUnmappedRows = T)
-        incProgress(amount = 0.5, message = "Generating plot...")
-        string_db$plot_network(ph_mapped$STRING_id, required_score = 800)
-        incProgress(amount = 0.5, message = "Done!")
-      })
     }, error = function(e) {
       plot(c(0, 1), c(0, 1), type = "n", axes = FALSE, xlab = "", ylab = "")
       text(0.5, 0.5, paste("Error generating STRING plot:", e$message), cex = 1.2)
