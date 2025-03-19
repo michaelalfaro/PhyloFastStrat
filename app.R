@@ -466,18 +466,30 @@ server <- function(input, output, session) {
         total_genes = sum(n),
         ratio = n / total_genes
       ) %>%
-      filter(gene_relevance != "All Human Genes") %>%
       mutate(
-        normalized_ratio = ratio / (total_in_group / sum(total_in_group))
+        normalized_ratio = ifelse(gene_relevance == "All Human Genes", 
+                                1,  # Baseline is always 1
+                                ratio / (total_in_group / sum(total_in_group)))
       )
     
-    ggplot(
-      data = ratio_data,
-      aes(x = mrca_name, y = normalized_ratio, color = gene_relevance, group = gene_relevance)
-    ) +
+    # Create separate data frames for baseline and gene sets
+    baseline_data <- ratio_data %>% filter(gene_relevance == "All Human Genes")
+    gene_sets_data <- ratio_data %>% filter(gene_relevance != "All Human Genes")
+    
+    ggplot() +
+      # Plot baseline
+      geom_line(data = baseline_data, 
+                aes(x = mrca_name, y = normalized_ratio, group = gene_relevance),
+                color = "grey50", linetype = "dashed", size = 1) +
+      # Plot gene sets
+      geom_line(data = gene_sets_data,
+                aes(x = mrca_name, y = normalized_ratio, 
+                    color = gene_relevance, group = gene_relevance),
+                size = 1) +
+      geom_point(data = gene_sets_data,
+                 aes(x = mrca_name, y = normalized_ratio, 
+                     color = gene_relevance, group = gene_relevance)) +
       geom_hline(yintercept = 1, color = "grey80") +
-      geom_point() +
-      geom_line() +
       ggpubr::theme_pubr(x.text.angle = 90) +
       labs(
         x = "Phylostrata",
@@ -485,7 +497,11 @@ server <- function(input, output, session) {
         title = "Normalized ratio of novel gene emergence across gene sets",
         color = "Gene Set"
       ) +
-      scale_color_brewer(palette = "Set1")
+      scale_color_brewer(palette = "Set1") +
+      annotate("text", x = Inf, y = Inf, 
+               label = "Baseline (All Human Genes)", 
+               hjust = 1.1, vjust = 1.1, 
+               color = "grey50", size = 3)
   })
   
   ##### GO reactive data ####
