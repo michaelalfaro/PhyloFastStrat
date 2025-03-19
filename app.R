@@ -479,21 +479,34 @@ server <- function(input, output, session) {
   
   ##### correlation matrix #####
   output$correlation_matrix <- renderPlot({
-    if(input$no_isoforms){
-      ph <- ph_filt
+    # Get the selected gene sets based on run mode
+    if(input$runmode) {
+      if(is.null(input$selectized_genes) || length(input$selectized_genes) < 2) {
+        return(NULL)
+      }
+      gene_sets <- list("Custom Set" = input$selectized_genes)
+    } else {
+      if(is.null(input$disease_of_interest) || length(input$disease_of_interest) < 2) {
+        return(NULL)
+      }
+      gene_sets <- lapply(input$disease_of_interest, function(x) {
+        genes <- MasterGeneLists[[x]]
+        genes[!is.na(genes)]
+      })
+      names(gene_sets) <- input$disease_of_interest
     }
     
     # Set up ph object for multiple gene sets
-    genes_of_interest <- genes_of_interest_reactive()
     ph$is_of_interest <- FALSE
     ph$annot_of_interest <- "All Human Genes"
     
     # Add each gene set
-    for(set_name in names(genes_of_interest)) {
-      ph$is_of_interest[ph$gene %in% genes_of_interest[[set_name]]] <- TRUE
-      ph$annot_of_interest[ph$gene %in% genes_of_interest[[set_name]]] <- set_name
+    for(set_name in names(gene_sets)) {
+      ph$is_of_interest[ph$gene %in% gene_sets[[set_name]]] <- TRUE
+      ph$annot_of_interest[ph$gene %in% gene_sets[[set_name]]] <- set_name
     }
 
+    # Calculate normalized ratios
     ph_by_ps <- ph %>%
       dplyr::distinct() %>%
       dplyr::mutate(
@@ -521,101 +534,59 @@ server <- function(input, output, session) {
                                 ratio / (total_in_group / sum(total_in_group)))
       )
     
-    # Filter out the baseline and reshape data for correlation matrix
-    correlation_data <- ratio_data %>%
+    # Filter out baseline and create correlation data
+    corr_data <- ratio_data %>%
       filter(gene_relevance != "All Human Genes") %>%
       select(mrca_name, gene_relevance, normalized_ratio) %>%
-      pivot_wider(names_from = gene_relevance, 
-                 values_from = normalized_ratio) %>%
-      select(-mrca_name)  # Remove mrca_name column immediately after reshaping
+      pivot_wider(names_from = gene_relevance, values_from = normalized_ratio)
     
-    # Only show correlation matrix if we have more than one gene set
-    if(ncol(correlation_data) > 1) {
-      # Create scatter plot matrix
-      plot_data <- correlation_data %>%
-        as.data.frame() %>%
-        select_if(is.numeric)  # Ensure we only have numeric columns
-      
-      # Create pairs plot
-      p <- pairs(plot_data,
-            labels = colnames(plot_data),
-            main = "Scatter Plot Matrix of Normalized Gene Emergence Rates",
-            pch = 16,
-            col = rgb(0, 0, 0, 0.5),
-            cex.labels = 1.5,  # Increased label size
-            cex.axis = 1.2,    # Increased axis text size
-            upper.panel = function(x, y, ...) {
-              # Check if correlation is significant
-              cor_test <- cor.test(x, y)
-              p_val <- cor_test$p.value
-              if(p_val < 0.05) {
-                # Add light blue background for significant correlations
-                rect(par("usr")[1], par("usr")[3], par("usr")[2], par("usr")[4], 
-                     col = rgb(0.9, 0.9, 1, 0.3))
-              }
-              points(x, y, ...)
-              abline(lm(y ~ x), col = "red", lty = 2)
-              # Add correlation coefficient and p-value
-              cor_val <- cor_test$estimate
-              # Format p-value with scientific notation if needed
-              p_text <- ifelse(p_val < 0.001, 
-                             sprintf("p = %.1e", p_val),
-                             sprintf("p = %.3f", p_val))
-              text(mean(range(x)), max(y), 
-                   sprintf("r = %.2f\n%s", cor_val, p_text),
-                   cex = 1.2, col = "red", font = 2)  # Increased text size and made bold
-            },
-            lower.panel = function(x, y, ...) {
-              # Check if correlation is significant
-              cor_test <- cor.test(x, y)
-              p_val <- cor_test$p.value
-              if(p_val < 0.05) {
-                # Add light blue background for significant correlations
-                rect(par("usr")[1], par("usr")[3], par("usr")[2], par("usr")[4], 
-                     col = rgb(0.9, 0.9, 1, 0.3))
-              }
-              points(x, y, ...)
-              abline(lm(y ~ x), col = "red", lty = 2)
-              # Add correlation coefficient and p-value
-              cor_val <- cor_test$estimate
-              # Format p-value with scientific notation if needed
-              p_text <- ifelse(p_val < 0.001, 
-                             sprintf("p = %.1e", p_val),
-                             sprintf("p = %.3f", p_val))
-              text(mean(range(x)), max(y), 
-                   sprintf("r = %.2f\n%s", cor_val, p_text),
-                   cex = 1.2, col = "red", font = 2)  # Increased text size and made bold
-            },
-            diag.panel = function(x, ...) {
-              usr <- par("usr")
-              on.exit(par(usr))
-              par(usr = c(usr[1:2], 0, 1.5))
-              h <- hist(x, plot = FALSE)
-              breaks <- h$breaks
-              nB <- length(breaks)
-              y <- h$counts
-              y <- y/max(y)
-              rect(breaks[-nB], 0, breaks[-1], y, col = "grey80")
-            })
-      
-      # Store the plot data and parameters
-      plot_values$correlation_matrix <- list(
-        data = plot_data,
-        labels = colnames(plot_data)
+    # Create correlation matrix
+    cor_matrix <- cor(corr_data[,-1], use = "complete.obs")
+    
+    # Create a data frame for plotting
+    plot_data <- expand.grid(
+      set1 = colnames(cor_matrix),
+      set2 = colnames(cor_matrix)
+    )
+    
+    # Add correlation values and calculate p-values
+    plot_data <- plot_data %>%
+      rowwise() %>%
+      mutate(
+        correlation = cor_matrix[set1, set2],
+        p_value = cor.test(corr_data[[set1]], corr_data[[set2]])$p.value,
+        # Format correlation and p-value for display
+        label = sprintf("r = %.3f\np = %.3f", correlation, p_value),
+        # Add significance indicator
+        significant = p_value < 0.05
       )
-      p
-    } else {
-      # Show message if only one gene set is selected
-      p <- ggplot() +
-        annotate("text", x = 0.5, y = 0.5, 
-                 label = "Select at least two gene sets to view correlation matrix",
-                 size = 4) +
-        theme_void()
-      
-      # Store the plot
-      plot_values$correlation_matrix <- p
-      p
-    }
+    
+    # Create the plot
+    p <- ggplot(plot_data, aes(x = set1, y = set2)) +
+      geom_tile(aes(fill = correlation, alpha = significant)) +
+      geom_text(aes(label = label), size = 4) +
+      scale_fill_gradient2(
+        low = "#E41A1C", mid = "white", high = "#377EB8",
+        limits = c(-1, 1),
+        name = "Correlation"
+      ) +
+      scale_alpha_manual(values = c(0.3, 0.7), guide = "none") +
+      theme_minimal() +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.title = element_blank(),
+        panel.grid = element_blank(),
+        legend.position = "right",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 10)
+      ) +
+      labs(title = "Correlation Matrix of Normalized Gene Emergence Rates",
+           subtitle = "Significant correlations (p < 0.05) are highlighted")
+    
+    # Store the plot
+    plot_values$correlation_matrix <- p
+    p
   })
   
   ##### string plot #####
