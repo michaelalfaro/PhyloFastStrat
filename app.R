@@ -25,6 +25,8 @@ library(tidyverse)
 library(shinythemes)
 library(digest)  # For creating cache keys
 library(GGally)  # For correlation matrix plot
+library(gridExtra)  # For arranging plots
+library(grDevices)  # For PDF creation
 
 # Create cache directory if it doesn't exist
 if (!dir.exists("cache")) {
@@ -164,6 +166,11 @@ ui <- fluidPage(
     mainPanel(tabsetPanel(
       type = "tabs",
       tabPanel("Linear Plots",
+               div(
+                 style = "margin-bottom: 10px;",
+                 downloadButton("download_plots", "Save All Plots as PDF", 
+                              style = "margin-bottom: 10px;")
+               ),
                plotOutput("ph_plot"),
                plotOutput("rate_plot"),
                plotOutput("correlation_matrix")),
@@ -315,6 +322,13 @@ server <- function(input, output, session) {
   )
   )
   
+  # Add reactive values to store plots
+  plot_values <- reactiveValues(
+    ph_plot = NULL,
+    rate_plot = NULL,
+    correlation_matrix = NULL
+  )
+  
   ##### plot of PS emergence ##### 
   output$ph_plot <- renderPlot({
     # Filter alt isoforms if specified
@@ -346,7 +360,7 @@ server <- function(input, output, session) {
       dplyr::mutate(gene_relevance = annot_of_interest)
     
     # Generate plot
-    ggplot(
+    p <- ggplot(
       data = ph_by_ps,
       aes(
         x = mrca_name,
@@ -378,56 +392,9 @@ server <- function(input, output, session) {
                          margin = T,
                          base_size = 11)
     
-  })
-  
-  ##### string plot #####
-  output$string_plot <- renderPlot({
-    if(input$no_isoforms){
-      ph <- ph_filt
-    }
-    
-    # Add error handling
-    tryCatch({
-      # Get genes for current phylostrata
-      current_genes <- ph %>% 
-        filter(is_of_interest & mrca_name %in% input$ps) %>% 
-        pull(gene) %>% 
-        unique()
-      
-      # Check cache first
-      cached_results <- get_cached_string_results(current_genes, input$ps)
-      
-      if (!is.null(cached_results)) {
-        # Use cached results
-        string_db <- cached_results$string_db
-        ph_mapped <- cached_results$ph_mapped
-      } else {
-        # Generate new results
-        string_db <- STRINGdb::STRINGdb$new(species = 9606, version = "12", score_threshold = 200, input_directory = ".")
-        ph$is_of_interest <- ph$gene %in% genes_of_interest_reactive()
-        ph$annot_of_interest <-
-          ifelse(ph$is_of_interest,
-                 disease_name(),
-                 "All Human Genes")
-        
-        withProgress(message = "Pulling data from STRINGdb...", value = 0, {
-          ph_mapped <- string_db$map(ph %>% filter(is_of_interest & mrca_name %in% input$ps) %>% as.data.frame(), "gene", removeUnmappedRows = T)
-          incProgress(amount = 0.5, message = "Generating plot...")
-          
-          # Cache the results
-          save_to_cache(current_genes, input$ps, list(
-            string_db = string_db,
-            ph_mapped = ph_mapped
-          ))
-          
-          string_db$plot_network(ph_mapped$STRING_id, required_score = 800)
-          incProgress(amount = 0.5, message = "Done!")
-        })
-      }
-    }, error = function(e) {
-      plot(c(0, 1), c(0, 1), type = "n", axes = FALSE, xlab = "", ylab = "")
-      text(0.5, 0.5, paste("Error generating STRING plot:", e$message), cex = 1.2)
-    })
+    # Store the plot
+    plot_values$ph_plot <- p
+    p
   })
   
   ##### normalized evo rate  #####
@@ -478,7 +445,7 @@ server <- function(input, output, session) {
     baseline_data <- ratio_data %>% filter(gene_relevance == "All Human Genes")
     gene_sets_data <- ratio_data %>% filter(gene_relevance != "All Human Genes")
     
-    ggplot() +
+    p <- ggplot() +
       # Plot baseline
       geom_line(data = baseline_data, 
                 aes(x = mrca_name, y = normalized_ratio, group = gene_relevance),
@@ -504,6 +471,10 @@ server <- function(input, output, session) {
                label = "Baseline (All Human Genes)", 
                hjust = 1.1, vjust = 1.1, 
                color = "grey50", size = 3)
+    
+    # Store the plot
+    plot_values$rate_plot <- p
+    p
   })
   
   ##### correlation matrix #####
@@ -566,7 +537,7 @@ server <- function(input, output, session) {
         select_if(is.numeric)  # Ensure we only have numeric columns
       
       # Create pairs plot
-      pairs(plot_data,
+      p <- pairs(plot_data,
             labels = colnames(plot_data),
             main = "Scatter Plot Matrix of Normalized Gene Emergence Rates",
             pch = 16,
@@ -626,14 +597,75 @@ server <- function(input, output, session) {
               y <- y/max(y)
               rect(breaks[-nB], 0, breaks[-1], y, col = "grey80")
             })
+      
+      # Store the plot data and parameters
+      plot_values$correlation_matrix <- list(
+        data = plot_data,
+        labels = colnames(plot_data)
+      )
+      p
     } else {
       # Show message if only one gene set is selected
-      ggplot() +
+      p <- ggplot() +
         annotate("text", x = 0.5, y = 0.5, 
                  label = "Select at least two gene sets to view correlation matrix",
                  size = 4) +
         theme_void()
+      
+      # Store the plot
+      plot_values$correlation_matrix <- p
+      p
     }
+  })
+  
+  ##### string plot #####
+  output$string_plot <- renderPlot({
+    if(input$no_isoforms){
+      ph <- ph_filt
+    }
+    
+    # Add error handling
+    tryCatch({
+      # Get genes for current phylostrata
+      current_genes <- ph %>% 
+        filter(is_of_interest & mrca_name %in% input$ps) %>% 
+        pull(gene) %>% 
+        unique()
+      
+      # Check cache first
+      cached_results <- get_cached_string_results(current_genes, input$ps)
+      
+      if (!is.null(cached_results)) {
+        # Use cached results
+        string_db <- cached_results$string_db
+        ph_mapped <- cached_results$ph_mapped
+      } else {
+        # Generate new results
+        string_db <- STRINGdb::STRINGdb$new(species = 9606, version = "12", score_threshold = 200, input_directory = ".")
+        ph$is_of_interest <- ph$gene %in% genes_of_interest_reactive()
+        ph$annot_of_interest <-
+          ifelse(ph$is_of_interest,
+                 disease_name(),
+                 "All Human Genes")
+        
+        withProgress(message = "Pulling data from STRINGdb...", value = 0, {
+          ph_mapped <- string_db$map(ph %>% filter(is_of_interest & mrca_name %in% input$ps) %>% as.data.frame(), "gene", removeUnmappedRows = T)
+          incProgress(amount = 0.5, message = "Generating plot...")
+          
+          # Cache the results
+          save_to_cache(current_genes, input$ps, list(
+            string_db = string_db,
+            ph_mapped = ph_mapped
+          ))
+          
+          string_db$plot_network(ph_mapped$STRING_id, required_score = 800)
+          incProgress(amount = 0.5, message = "Done!")
+        })
+      }
+    }, error = function(e) {
+      plot(c(0, 1), c(0, 1), type = "n", axes = FALSE, xlab = "", ylab = "")
+      text(0.5, 0.5, paste("Error generating STRING plot:", e$message), cex = 1.2)
+    })
   })
   
   ##### GO reactive data ####
@@ -946,6 +978,90 @@ server <- function(input, output, session) {
     #plotly::ggplotly(plot2, tooltip = "label")
   })
   
+  # Add download handler
+  output$download_plots <- downloadHandler(
+    filename = function() {
+      paste0("phylostrat_plots_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".pdf")
+    },
+    content = function(file) {
+      # Create PDF with appropriate dimensions
+      pdf(file, width = 12, height = 16)
+      
+      # Create a layout with 3 rows
+      layout(matrix(c(1, 2, 3), nrow = 3, byrow = TRUE), heights = c(1, 1, 1.2))
+      
+      # Plot 1: Phylostrata plot
+      print(plot_values$ph_plot)
+      
+      # Plot 2: Rate plot
+      print(plot_values$rate_plot)
+      
+      # Plot 3: Correlation matrix
+      if (!is.null(plot_values$correlation_matrix)) {
+        if (is.list(plot_values$correlation_matrix)) {
+          # Recreate the pairs plot
+          pairs(plot_values$correlation_matrix$data,
+                labels = plot_values$correlation_matrix$labels,
+                main = "Scatter Plot Matrix of Normalized Gene Emergence Rates",
+                pch = 16,
+                col = rgb(0, 0, 0, 0.5),
+                cex.labels = 1.5,
+                cex.axis = 1.2,
+                upper.panel = function(x, y, ...) {
+                  cor_test <- cor.test(x, y)
+                  p_val <- cor_test$p.value
+                  if(p_val < 0.05) {
+                    rect(par("usr")[1], par("usr")[3], par("usr")[2], par("usr")[4], 
+                         col = rgb(0.9, 0.9, 1, 0.3))
+                  }
+                  points(x, y, ...)
+                  abline(lm(y ~ x), col = "red", lty = 2)
+                  cor_val <- cor_test$estimate
+                  p_text <- ifelse(p_val < 0.001, 
+                                 sprintf("p = %.1e", p_val),
+                                 sprintf("p = %.3f", p_val))
+                  text(mean(range(x)), max(y), 
+                       sprintf("r = %.2f\n%s", cor_val, p_text),
+                       cex = 1.2, col = "red", font = 2)
+                },
+                lower.panel = function(x, y, ...) {
+                  cor_test <- cor.test(x, y)
+                  p_val <- cor_test$p.value
+                  if(p_val < 0.05) {
+                    rect(par("usr")[1], par("usr")[3], par("usr")[2], par("usr")[4], 
+                         col = rgb(0.9, 0.9, 1, 0.3))
+                  }
+                  points(x, y, ...)
+                  abline(lm(y ~ x), col = "red", lty = 2)
+                  cor_val <- cor_test$estimate
+                  p_text <- ifelse(p_val < 0.001, 
+                                 sprintf("p = %.1e", p_val),
+                                 sprintf("p = %.3f", p_val))
+                  text(mean(range(x)), max(y), 
+                       sprintf("r = %.2f\n%s", cor_val, p_text),
+                       cex = 1.2, col = "red", font = 2)
+                },
+                diag.panel = function(x, ...) {
+                  usr <- par("usr")
+                  on.exit(par(usr))
+                  par(usr = c(usr[1:2], 0, 1.5))
+                  h <- hist(x, plot = FALSE)
+                  breaks <- h$breaks
+                  nB <- length(breaks)
+                  y <- h$counts
+                  y <- y/max(y)
+                  rect(breaks[-nB], 0, breaks[-1], y, col = "grey80")
+                })
+        } else {
+          # Print the ggplot object
+          print(plot_values$correlation_matrix)
+        }
+      }
+      
+      dev.off()
+    },
+    contentType = "application/pdf"  # Explicitly set content type to PDF
+  )
 }
 
 ##### RUN #####
