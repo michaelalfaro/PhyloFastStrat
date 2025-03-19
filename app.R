@@ -693,11 +693,16 @@ server <- function(input, output, session) {
           
           # Cache the results
           saveRDS(list(string_db = string_db, ph_mapped = ph_mapped), cache_file)
-          
-          string_db$plot_network(ph_mapped$STRING_id, required_score = 800)
-          incProgress(amount = 0.5, message = "Done!")
         })
       }
+      
+      # Increase stack size limit before plotting
+      options(expressions = 5000)  # Increase expression limit
+      Sys.setenv("R_STACK_SIZE" = "100000000")  # Set stack size to 100MB
+      
+      # Generate the plot
+      string_db$plot_network(ph_mapped$STRING_id, required_score = 800)
+      
     }, error = function(e) {
       plot(c(0, 1), c(0, 1), type = "n", axes = FALSE, xlab = "", ylab = "")
       text(0.5, 0.5, paste("Error generating STRING plot:", e$message), cex = 1.2)
