@@ -114,9 +114,9 @@ ui <- fluidPage(
         condition = "!input.runmode",
         selectInput(
           inputId = "disease_of_interest",
-          label = "Disease-Gene List:",
+          label = "Disease-Gene Lists:",
           choices = c(colnames(MasterGeneLists)),
-          multiple = F,
+          multiple = TRUE,
           selected = NULL,
           selectize = T
         )
@@ -181,7 +181,6 @@ ui <- fluidPage(
         numericInput(inputId = "labeltop", label = "Number of top GO-BPs to label:", value = 5, min = 1, max = 10),
         numericInput(inputId = "cappval", label = "Max -log P-value to visualize", value = 100, min = 1, max = 100),
         plotOutput("GOplot_static", height = "700px")
-        #plotly::plotlyOutput("duplicated_go_plot", width = "100%", height = "500px") %>% withSpinner()
       )
     )
     )
@@ -206,15 +205,31 @@ server <- function(input, output, session) {
     if(!is.null(input$selectized_genes) & input$runmode){
       genes_of_interest <- input$selectized_genes
     }else if(!is.null(input$disease_of_interest) & !input$runmode){
-      genes_of_interest <- MasterGeneLists[[input$disease_of_interest]]
+      # Handle multiple disease sets
+      genes_of_interest <- lapply(input$disease_of_interest, function(x) {
+        genes <- MasterGeneLists[[x]]
+        genes[!is.na(genes)]
+      })
+      names(genes_of_interest) <- input$disease_of_interest
     }else if(!is.null(input$pasted_genes) && input$pasted_genes != ""){
       # Handle pasted genes
       genes_of_interest <- unlist(strsplit(input$pasted_genes, split = "[\n,]+"))
       genes_of_interest <- trimws(genes_of_interest)
       genes_of_interest <- genes_of_interest[genes_of_interest != ""]
+      genes_of_interest <- list(genes_of_interest)
+      names(genes_of_interest) <- ifelse(
+        input$other_disease_of_interest != "",
+        input$other_disease_of_interest,
+        paste0("Custom Gene Set ", format(Sys.time(), "%Y%m%d_%H%M%S"))
+      )
     }else{
       custom_gene_list <- readr::read_csv(file = input$custom_file$datapath)
-      genes_of_interest <- custom_gene_list[,1]
+      genes_of_interest <- list(custom_gene_list[,1])
+      names(genes_of_interest) <- ifelse(
+        input$other_disease_of_interest != "",
+        input$other_disease_of_interest,
+        paste0("Custom Gene Set ", format(Sys.time(), "%Y%m%d_%H%M%S"))
+      )
     }
     
     # Set default name if none provided
@@ -222,26 +237,27 @@ server <- function(input, output, session) {
       updateTextInput(session, "other_disease_of_interest", value = paste0("Custom Gene Set ", format(Sys.time(), "%Y%m%d_%H%M%S")))
     }
     
-    # Save a copy of genes_of_interest to compare input to what is processed
-    genes_of_interest_input <- genes_of_interest[!is.na(genes_of_interest)]
-    
     # Clean genes of interest
-    genes_of_interest <-
-      genes_of_interest[!is.na(genes_of_interest)]
-    genes_of_interest <-
-      genes_of_interest[!grepl("RNU", genes_of_interest)]
-    genes_of_interest <- unique(genes_of_interest)
-    genes_of_interest <-
-      sapply(genes_of_interest, function(x)
-        strsplit(x, split = " ", fixed = T)[[1]][1])
+    genes_of_interest <- lapply(genes_of_interest, function(genes) {
+      genes <- genes[!is.na(genes)]
+      genes <- genes[!grepl("RNU", genes)]
+      genes <- unique(genes)
+      genes <- sapply(genes, function(x) strsplit(x, split = " ", fixed = T)[[1]][1])
+      genes
+    })
     
     # How many genes were found in the phylostrata object?
-    genes_of_interest_found <- ph$gene[ph$gene %in% genes_of_interest]
+    genes_of_interest_found <- lapply(genes_of_interest, function(genes) {
+      ph$gene[ph$gene %in% genes]
+    })
+    
+    # Calculate total genes for display
+    total_genes <- sum(sapply(genes_of_interest, length))
+    total_mapped <- sum(sapply(genes_of_interest_found, length))
     
     output$numGenesMappedUP <- renderUI({
-      # Message to show gene mapping to phylostrat results
-      HTML(paste0("Of ", length(genes_of_interest_input), " input genes, ", length(genes_of_interest), " gene IDs were cleaned and used.", "<br/>",
-        "From ", length(genes_of_interest), " cleaned genes, ", length(genes_of_interest_found), " UniProt IDs were mapped (including isoforms)."))
+      HTML(paste0("Of ", total_genes, " input genes, ", total_genes, " gene IDs were cleaned and used.", "<br/>",
+        "From ", total_genes, " cleaned genes, ", total_mapped, " UniProt IDs were mapped (including isoforms)."))
     })
     
     genes_of_interest
@@ -303,15 +319,17 @@ server <- function(input, output, session) {
     if(input$no_isoforms){
       ph <- ph_filt
     }
-    # Set up ph object
+    
+    # Set up ph object for multiple gene sets
     genes_of_interest <- genes_of_interest_reactive()
-    ph$is_of_interest <- ph$gene %in% genes_of_interest
-    ph$annot_of_interest <-
-      ifelse(ph$is_of_interest,
-             disease_name(),
-             "All Human Genes")
-    ph$gene <-
-      gene_uniprot_conv_df$Gene[match(ph$qseqid, gene_uniprot_conv_df$Entry)]
+    ph$is_of_interest <- FALSE
+    ph$annot_of_interest <- "All Human Genes"
+    
+    # Add each gene set
+    for(set_name in names(genes_of_interest)) {
+      ph$is_of_interest[ph$gene %in% genes_of_interest[[set_name]]] <- TRUE
+      ph$annot_of_interest[ph$gene %in% genes_of_interest[[set_name]]] <- set_name
+    }
 
     # Reframe data
     ph_by_ps <- ph %>%
@@ -347,11 +365,7 @@ server <- function(input, output, session) {
       labs(
         y = bquote(Number ~ of ~ novel ~ genes ~ (log[10] ~ scaled)),
         x = "Phylostrata",
-        title = paste0(
-          "Comparison of evolution rates of ",
-          disease_name(),
-          " genes to all other genes"
-        ),
+        title = "Comparison of evolution rates across gene sets",
         fill = "",
         color = ""
       ) +
@@ -419,11 +433,17 @@ server <- function(input, output, session) {
     if(input$no_isoforms){
       ph <- ph_filt
     }
-    ph$is_of_interest <- ph$gene %in% genes_of_interest_reactive()
-    ph$annot_of_interest <-
-      ifelse(ph$is_of_interest,
-             disease_name(),
-             "All Human Genes")
+    
+    # Set up ph object for multiple gene sets
+    genes_of_interest <- genes_of_interest_reactive()
+    ph$is_of_interest <- FALSE
+    ph$annot_of_interest <- "All Human Genes"
+    
+    # Add each gene set
+    for(set_name in names(genes_of_interest)) {
+      ph$is_of_interest[ph$gene %in% genes_of_interest[[set_name]]] <- TRUE
+      ph$annot_of_interest[ph$gene %in% genes_of_interest[[set_name]]] <- set_name
+    }
 
     ph_by_ps <- ph %>%
       dplyr::distinct() %>%
@@ -435,7 +455,6 @@ server <- function(input, output, session) {
                    annot_of_interest,
                    .drop = F) %>%
       dplyr::mutate(gene_relevance = annot_of_interest)
-    
     
     fixed_ratio <- ph_by_ps %>%
       group_by(gene_relevance) %>%
@@ -463,11 +482,7 @@ server <- function(input, output, session) {
         y = paste0(
           "Ratio of Evolutionary Rate \n(Disease Genes : Total Human Genome)"
         ),
-        title = paste0(
-          "Normalized ratio of novel gene emergence for ",
-          disease_name(),
-          " to overall human genes"
-        )
+        title = "Normalized ratio of novel gene emergence across gene sets"
       )
   })
   
