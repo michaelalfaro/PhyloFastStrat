@@ -24,6 +24,7 @@ library(DT)
 library(tidyverse)
 library(shinythemes)
 library(digest)  # For creating cache keys
+library(GGally)  # For correlation matrix plot
 
 # Create cache directory if it doesn't exist
 if (!dir.exists("cache")) {
@@ -164,7 +165,8 @@ ui <- fluidPage(
       type = "tabs",
       tabPanel("Linear Plots",
                plotOutput("ph_plot"),
-               plotOutput("rate_plot")),
+               plotOutput("rate_plot"),
+               plotOutput("correlation_matrix")),
       tabPanel("Results table",
                DT::DTOutput("phylo_table")
                ),
@@ -502,6 +504,136 @@ server <- function(input, output, session) {
                label = "Baseline (All Human Genes)", 
                hjust = 1.1, vjust = 1.1, 
                color = "grey50", size = 3)
+  })
+  
+  ##### correlation matrix #####
+  output$correlation_matrix <- renderPlot({
+    if(input$no_isoforms){
+      ph <- ph_filt
+    }
+    
+    # Set up ph object for multiple gene sets
+    genes_of_interest <- genes_of_interest_reactive()
+    ph$is_of_interest <- FALSE
+    ph$annot_of_interest <- "All Human Genes"
+    
+    # Add each gene set
+    for(set_name in names(genes_of_interest)) {
+      ph$is_of_interest[ph$gene %in% genes_of_interest[[set_name]]] <- TRUE
+      ph$annot_of_interest[ph$gene %in% genes_of_interest[[set_name]]] <- set_name
+    }
+
+    ph_by_ps <- ph %>%
+      dplyr::distinct() %>%
+      dplyr::mutate(
+        mrca_name = as.factor(mrca_name),
+        annot_of_interest = as.factor(annot_of_interest)
+      ) %>%
+      dplyr::count(mrca_name = as.factor(mrca_name),
+                   annot_of_interest,
+                   .drop = F) %>%
+      dplyr::mutate(gene_relevance = annot_of_interest)
+    
+    # Calculate ratios for each gene set independently
+    ratio_data <- ph_by_ps %>%
+      group_by(gene_relevance) %>%
+      mutate(total_in_group = sum(n)) %>%
+      ungroup() %>%
+      group_by(mrca_name) %>%
+      mutate(
+        total_genes = sum(n),
+        ratio = n / total_genes
+      ) %>%
+      mutate(
+        normalized_ratio = ifelse(gene_relevance == "All Human Genes", 
+                                1,  # Baseline is always 1
+                                ratio / (total_in_group / sum(total_in_group)))
+      )
+    
+    # Filter out the baseline and reshape data for correlation matrix
+    correlation_data <- ratio_data %>%
+      filter(gene_relevance != "All Human Genes") %>%
+      select(mrca_name, gene_relevance, normalized_ratio) %>%
+      pivot_wider(names_from = gene_relevance, 
+                 values_from = normalized_ratio) %>%
+      select(-mrca_name)  # Remove mrca_name column immediately after reshaping
+    
+    # Only show correlation matrix if we have more than one gene set
+    if(ncol(correlation_data) > 1) {
+      # Create scatter plot matrix
+      plot_data <- correlation_data %>%
+        as.data.frame() %>%
+        select_if(is.numeric)  # Ensure we only have numeric columns
+      
+      # Create pairs plot
+      pairs(plot_data,
+            labels = colnames(plot_data),
+            main = "Scatter Plot Matrix of Normalized Gene Emergence Rates",
+            pch = 16,
+            col = rgb(0, 0, 0, 0.5),
+            cex.labels = 1.5,  # Increased label size
+            cex.axis = 1.2,    # Increased axis text size
+            upper.panel = function(x, y, ...) {
+              # Check if correlation is significant
+              cor_test <- cor.test(x, y)
+              p_val <- cor_test$p.value
+              if(p_val < 0.05) {
+                # Add light blue background for significant correlations
+                rect(par("usr")[1], par("usr")[3], par("usr")[2], par("usr")[4], 
+                     col = rgb(0.9, 0.9, 1, 0.3))
+              }
+              points(x, y, ...)
+              abline(lm(y ~ x), col = "red", lty = 2)
+              # Add correlation coefficient and p-value
+              cor_val <- cor_test$estimate
+              # Format p-value with scientific notation if needed
+              p_text <- ifelse(p_val < 0.001, 
+                             sprintf("p = %.1e", p_val),
+                             sprintf("p = %.3f", p_val))
+              text(mean(range(x)), max(y), 
+                   sprintf("r = %.2f\n%s", cor_val, p_text),
+                   cex = 1.2, col = "red", font = 2)  # Increased text size and made bold
+            },
+            lower.panel = function(x, y, ...) {
+              # Check if correlation is significant
+              cor_test <- cor.test(x, y)
+              p_val <- cor_test$p.value
+              if(p_val < 0.05) {
+                # Add light blue background for significant correlations
+                rect(par("usr")[1], par("usr")[3], par("usr")[2], par("usr")[4], 
+                     col = rgb(0.9, 0.9, 1, 0.3))
+              }
+              points(x, y, ...)
+              abline(lm(y ~ x), col = "red", lty = 2)
+              # Add correlation coefficient and p-value
+              cor_val <- cor_test$estimate
+              # Format p-value with scientific notation if needed
+              p_text <- ifelse(p_val < 0.001, 
+                             sprintf("p = %.1e", p_val),
+                             sprintf("p = %.3f", p_val))
+              text(mean(range(x)), max(y), 
+                   sprintf("r = %.2f\n%s", cor_val, p_text),
+                   cex = 1.2, col = "red", font = 2)  # Increased text size and made bold
+            },
+            diag.panel = function(x, ...) {
+              usr <- par("usr")
+              on.exit(par(usr))
+              par(usr = c(usr[1:2], 0, 1.5))
+              h <- hist(x, plot = FALSE)
+              breaks <- h$breaks
+              nB <- length(breaks)
+              y <- h$counts
+              y <- y/max(y)
+              rect(breaks[-nB], 0, breaks[-1], y, col = "grey80")
+            })
+    } else {
+      # Show message if only one gene set is selected
+      ggplot() +
+        annotate("text", x = 0.5, y = 0.5, 
+                 label = "Select at least two gene sets to view correlation matrix",
+                 size = 4) +
+        theme_void()
+    }
   })
   
   ##### GO reactive data ####
