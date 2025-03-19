@@ -456,34 +456,36 @@ server <- function(input, output, session) {
                    .drop = F) %>%
       dplyr::mutate(gene_relevance = annot_of_interest)
     
-    fixed_ratio <- ph_by_ps %>%
+    # Calculate ratios for each gene set independently
+    ratio_data <- ph_by_ps %>%
       group_by(gene_relevance) %>%
-      summarize(total_in_group = sum(n)) %>%
-      pull(total_in_group)
-    fixed_ratio <- min(fixed_ratio) / sum(fixed_ratio)
+      mutate(total_in_group = sum(n)) %>%
+      ungroup() %>%
+      group_by(mrca_name) %>%
+      mutate(
+        total_genes = sum(n),
+        ratio = n / total_genes
+      ) %>%
+      filter(gene_relevance != "All Human Genes") %>%
+      mutate(
+        normalized_ratio = ratio / (total_in_group / sum(total_in_group))
+      )
     
     ggplot(
-      data = ph_by_ps %>%
-        pivot_wider(
-          id_cols = c(mrca_name),
-          names_from = gene_relevance,
-          values_from = n
-        ) %>%
-        mutate(Ratio = (.[[3]] / .[[2]]) / fixed_ratio) %>%
-        filter(!is.na(Ratio)),
-      aes(x = mrca_name, y = Ratio)
+      data = ratio_data,
+      aes(x = mrca_name, y = normalized_ratio, color = gene_relevance, group = gene_relevance)
     ) +
       geom_hline(yintercept = 1, color = "grey80") +
       geom_point() +
+      geom_line() +
       ggpubr::theme_pubr(x.text.angle = 90) +
-      geom_line(group = "a") +
       labs(
         x = "Phylostrata",
-        y = paste0(
-          "Ratio of Evolutionary Rate \n(Disease Genes : Total Human Genome)"
-        ),
-        title = "Normalized ratio of novel gene emergence across gene sets"
-      )
+        y = "Normalized Ratio of Gene Emergence",
+        title = "Normalized ratio of novel gene emergence across gene sets",
+        color = "Gene Set"
+      ) +
+      scale_color_brewer(palette = "Set1")
   })
   
   ##### GO reactive data ####
